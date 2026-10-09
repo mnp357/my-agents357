@@ -1,0 +1,22 @@
+[Unit]
+Description=My Agents Bybit Trader Telegram command receiver
+After=network-online.target my-agents.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/my-agents
+Environment=MY_AGENTS_BOT=trader
+ExecStart=/opt/my-agents/venv/bin/python /opt/my-agents/telegram_bridge.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/my-agents
+
+[Install]
+WantedBy=multi-user.target

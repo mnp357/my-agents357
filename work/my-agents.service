@@ -1,0 +1,20 @@
+[Unit]
+Description=My Agents private website
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/my-agents
+ExecStart=/opt/my-agents/venv/bin/gunicorn --bind 127.0.0.1:8890 --workers 2 --no-control-socket --access-logfile - site_server:app
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/my-agents
+
+[Install]
+WantedBy=multi-user.target

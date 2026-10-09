@@ -1,0 +1,11 @@
+[Unit]
+Description=Wake the Bybit three-hour control and daily reminder scheduler every five minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00
+AccuracySec=5s
+Persistent=true
+Unit=my-agents-trader-expiry.service
+
+[Install]
+WantedBy=timers.target

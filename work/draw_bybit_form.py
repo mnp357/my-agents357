@@ -1,0 +1,27 @@
+from PIL import Image, ImageDraw, ImageFont
+from pathlib import Path
+im=Image.new('RGB',(900,1180),'#f7f8fa');d=ImageDraw.Draw(im)
+reg='/System/Library/Fonts/Supplemental/Arial.ttf';bold='/System/Library/Fonts/Supplemental/Arial Bold.ttf'
+f=lambda n,b=False:ImageFont.truetype(bold if b else reg,n)
+d.rounded_rectangle((120,35,780,1130),radius=22,fill='white',outline='#e1e7e5',width=2)
+d.rounded_rectangle((166,79,209,122),radius=8,fill='#173f3d')
+d.text((178,80),'✳',font=f(31,True),fill='#c2eeaa')
+d.text((228,84),'Мои агенты',font=f(27,True),fill='#415c50')
+d.text((166,165),'Подключить Bybit',font=f(38,True),fill='#192b30')
+for i,line in enumerate(['Агент прочитает доступную историю спотовых и фьючерсных','сделок, поступлений, выводов и переводов и подготовит Excel.']):d.text((166,226+i*27),line,font=f(18),fill='#74827d')
+d.rounded_rectangle((166,305,734,487),radius=12,fill='#f4f7f4',outline='#dcebe0',width=2)
+d.text((190,328),'Безопасное подключение',font=f(20,True),fill='#192b30')
+for i,line in enumerate(['В Bybit создайте системный API-ключ с правами только на','чтение. Права на торговлю и вывод средств не нужны.','Если задан список разрешённых IP, укажите IP сервера:','195.133.15.115']):d.text((190,370+i*24),line,font=f(17),fill='#73817a')
+def field(y,label,placeholder=''):
+ d.text((166,y),label,font=f(18,True),fill='#192b30')
+ d.rounded_rectangle((166,y+33,734,y+91),radius=9,fill='white',outline='#d7e0db',width=2)
+ if placeholder:d.text((188,y+50),placeholder,font=f(18),fill='#192b30')
+field(520,'Регион аккаунта','Обычный Bybit')
+field(637,'API Key')
+field(754,'API Secret')
+d.rounded_rectangle((166,883,734,946),radius=9,fill='#244e40')
+d.text((315,902),'Проверить и подключить',font=f(20,True),fill='white')
+for i,line in enumerate(['Ключ проверяется через Bybit и сохраняется только на вашем сервере.','В чат его присылать не нужно.']):d.text((166,976+i*23),line,font=f(16),fill='#74827d')
+d.text((359,1073),'← Вернуться к агенту',font=f(17),fill='#60786b')
+out=Path('outputs/Форма-подключения-Bybit.png');im.save(out)
+print(out)

@@ -1,0 +1,16 @@
+.DS_Store
+__pycache__/
+*.pyc
+.env
+.env.*
+outputs/
+work/timeweb_deploy
+work/timeweb_known_hosts
+work/*.pem
+work/*.key
+work/*credentials*
+work/*secret*
+work/*token*
+trader-api.json
+*.sqlite
+*.db

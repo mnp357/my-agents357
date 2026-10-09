@@ -1,0 +1,17 @@
+[Unit]
+Description=Review due My Agents Bybit limit orders
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/my-agents
+ExecStart=/opt/my-agents/venv/bin/python /opt/my-agents/trader_expiry.py
+TimeoutStartSec=5min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/my-agents
