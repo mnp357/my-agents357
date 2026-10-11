@@ -36,7 +36,7 @@ ASSET_ALIASES = (
 
 def order_symbol(text, direction_end):
     """Read either a ticker or a common Russian asset name after the direction."""
-    before_price = re.split(r'\b(?:точка\s+входа|цена\s+входа|цена|по|limit)\b',
+    before_price = re.split(r'\b(?:точка\s+входа|цена\s+входа|цена|limit)\b',
                             text[direction_end:], maxsplit=1, flags=re.I)[0]
     explicit = re.search(r'\b([A-Za-z][A-Za-z0-9]{1,19})\b', before_price)
     if explicit:
@@ -78,6 +78,8 @@ def parse_open(text):
     if bool(percent_match) == bool(amount_match):
         raise PreviewError('Укажите один размер позиции: «размер 1% капитала» или «размер позиции на 10 USDT».')
     price = number(price_match.group(1))
+    if re.match(r'\s*(?:тыс\.|тыс\b|тысяч[а-я]*\b)', text[price_match.end():], re.I):
+        price *= 1000
     percent = number(percent_match.group(1)) if percent_match else None
     amount_usdt = number(amount_match.group(1)) if amount_match else None
     control_match = re.search(r'(?:контроль(?:н(?:ая|ый|ую)?\s+(?:цен[а-я]*|уров[а-я]*))?|уровень\s+отмены)\s*[:=]?\s*(\d+(?:[.,]\d+)?)', text, re.I)

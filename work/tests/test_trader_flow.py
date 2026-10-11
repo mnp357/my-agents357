@@ -78,6 +78,14 @@ class FakeClient:
 
 
 class TraderFlowTests(unittest.TestCase):
+    def test_bitcoin_short_ladder_with_spoken_thousands(self):
+        intent = parse_open('Открой шорт по биткоину лесенкой. Цена 82 тысячи, объем 2%')
+        self.assertEqual(intent['symbol'], 'BTCUSDT')
+        self.assertEqual(intent['side'], 'Sell')
+        self.assertTrue(intent['ladder'])
+        self.assertEqual(str(intent['price']), '82000')
+        self.assertEqual(str(intent['percent']), '2')
+
     def test_solano_short_ladder_alias(self):
         intent = parse_open('Открой Short Solano лесенкой цена 115 объем 1%')
         self.assertEqual(intent['symbol'], 'SOLUSDT')
