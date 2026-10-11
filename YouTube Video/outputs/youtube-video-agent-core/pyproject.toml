@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "youtube-video-agent-core"
+version = "0.3.2"
+description = "Bounded internal API for saving public YouTube and Instagram videos without cookies"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi==0.116.1",
+  "faster-whisper==1.2.1",
+  "pydantic==2.11.7",
+  "uvicorn[standard]==0.35.0",
+  "yt-dlp[default]==2026.8.19",
+]
+
+[project.optional-dependencies]
+test = [
+  "httpx==0.28.1",
+  "pytest==8.4.1",
+]
+
+[tool.setuptools]
+packages = ["youtube_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

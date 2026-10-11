@@ -1,0 +1,26 @@
+[Unit]
+Description=YouTube and Instagram public video saving API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/youtube-video-agent
+EnvironmentFile=/etc/my-agents/youtube-agent.env
+ExecStart=/opt/youtube-video-agent/venv/bin/uvicorn youtube_agent.app:app --host 127.0.0.1 --port 8091 --workers 1 --no-access-log
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/youtube-video-agent
+
+[Install]
+WantedBy=multi-user.target
