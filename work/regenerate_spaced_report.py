@@ -9,8 +9,8 @@ status_path=root/'job-status.json'
 status=json.loads(status_path.read_text())
 assert status['state']=='completed', 'Wait for active report to finish'
 old=root/'reports'/status['file']
-stamp=old.stem.removeprefix('Hyperliquid-')
-raw=root/'reports'/(stamp+'.json')
+raw_name=status.get('raw_file') or old.stem.removeprefix('Hyperliquid-')+'.json'
+raw=root/'reports'/raw_name
 data=json.loads(raw.read_text())
 new=old.with_name(old.stem+'-spaced.xlsx')
 export(data,new)
