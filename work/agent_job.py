@@ -3,6 +3,7 @@ import os
 import fcntl
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from coinglass_collector import collect
 from liquidation_report import export
 
@@ -30,16 +31,21 @@ def send_document(token,chat_id,path,caption):
         result=json.load(response)
     if not result.get('ok'): raise RuntimeError('Не удалось отправить файл')
 
+def report_filename(started_at):
+    local_time=started_at.astimezone(ZoneInfo('Asia/Omsk'))
+    return 'Hyperliquid '+local_time.strftime('%d %m %Y %H-%M-%S')+'.xlsx'
+
 def run():
     from telegram_bridge import state,send
     current=state()
     if not current or current['owner_chat_id'] is None: raise RuntimeError('Telegram не связан')
     token,chat=current['token'],current['owner_chat_id']
-    stamp=datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
+    started_at=datetime.now(timezone.utc)
+    stamp=started_at.strftime('%Y%m%d-%H%M%S')
     reports=ROOT/'reports'
     reports.mkdir(exist_ok=True)
     raw=reports/(stamp+'.json')
-    workbook=reports/('Hyperliquid-'+stamp+'.xlsx')
+    workbook=reports/report_filename(started_at)
     status(state='running',message='Открываю CoinGlass',started_at=stamp)
     try:
         data=collect(raw,progress=lambda text:status(state='running',message=text,started_at=stamp),cancelled=CANCEL.exists)
@@ -47,7 +53,7 @@ def run():
         caption=('Сбор остановлен. ' if data.get('cancelled') else 'Готово. ')+f"Проверено монет: {summary['checked']}/{summary['total']}. Позиций в пределах 7%: {summary['positions']}. До 3 страниц на монету, размер по убыванию, XYZ исключён."
         if summary['errors']: caption+=' Есть пропуски: смотрите лист «Охват».'
         send_document(token,chat,workbook,caption)
-        status(state='cancelled' if data.get('cancelled') else 'completed',message=caption,file=workbook.name,**summary)
+        status(state='cancelled' if data.get('cancelled') else 'completed',message=caption,file=workbook.name,raw_file=raw.name,**summary)
     except Exception:
         status(state='failed',message='Сбор или отправка не завершены. Повторите /activate; сохранённые файлы остаются на сервере.')
         try: send(token,chat,'Не удалось завершить сбор или отправку. CoinGlass мог не загрузить таблицу. Повторите /activate позже. Пустой результат не считается отсутствием ликвидаций.')

@@ -5,7 +5,7 @@ from collections import defaultdict
 
 
 ASSET_PRIORITY = {symbol: index for index, symbol in enumerate(
-    ('BTC', 'ETH', 'HYPE', 'XRP', 'ETC', 'LTC', 'DOGE', 'ADA'))}
+    ('BTC', 'ETH', 'HYPE', 'SOL'))}
 SIDE_FILLS = {
     'Лонг': 'E7F4E8',
     'Шорт': 'FCE8EF',
