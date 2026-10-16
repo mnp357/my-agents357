@@ -22,14 +22,16 @@ with TemporaryDirectory() as directory:
                 row('BTC','Long','94') | {'volume':'$10M'},
                 row('BTC','Long','99') | {'volume':'$2M'},
                 row('BTC','Short','106') | {'volume':'$8M'},
-                row('BTC','Short','101') | {'volume':'$3M'},
+                row('BTC','Short','101') | {'volume':'$3M','price':'$101'},
             ]}]}]}
     file=Path(directory)/'report.xlsx'
     export(sample,file)
     sheet=load_workbook(file,read_only=True,data_only=True)['Сводка']
-    assert [sheet.cell(10,col).value for col in (4,5,6)] == [
+    assert sheet.cell(10,2).value == 'Текущая цена, USD'
+    assert sheet.cell(11,2).value == 101
+    assert [sheet.cell(10,col).value for col in (5,6,7)] == [
         'Ближайший лонг','Ближайший шорт','Позиций в пределах 7%']
-    assert [sheet.cell(11,col).value for col in (4,5,6)] == [99,101,4]
+    assert [sheet.cell(11,col).value for col in (5,6,7)] == [99,101,4]
     assert all(sheet.cell(row,col).alignment.horizontal == 'center'
-               for row in (10,11) for col in range(1,7))
+               for row in (10,11) for col in range(1,8))
 print('Summary nearest levels and centered alignment: passed')

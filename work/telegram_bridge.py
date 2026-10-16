@@ -336,6 +336,22 @@ def handle_update(update, agent='hyperliquid'):
                 return
         command = text.split(' ', 1)[0].split('@', 1)[0].lower()
         if agent == 'trader':
+            if command == '/iphone':
+                from iphone_push import register_device, load_accounts
+                try:
+                    parts = text.split()
+                    if len(parts) != 3:
+                        raise ValueError('Скопируйте команду целиком из приложения Loud 357.')
+                    uids = parts[2].split(',')
+                    registered = register_device(parts[1], uids)
+                    missing = sorted(set(registered) - set(load_accounts()))
+                    reply = 'iPhone зарегистрирован для ' + str(len(registered)) + ' аккаунтов.'
+                    if missing:
+                        reply += ' Добавьте ключи только для чтения для UID ' + ', '.join(missing) + ' на странице https://195.133.15.115/iphone/accounts'
+                except ValueError as exc:
+                    reply = str(exc)
+                send(token, chat['id'], reply)
+                return
             connected = Path('/var/lib/my-agents/trader-api.json').exists()
             if command == '/status' or text.lower().startswith(('проверь статус', 'проверка статуса')):
                 if connected:

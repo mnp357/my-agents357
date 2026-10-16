@@ -2,17 +2,26 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
+import urllib.error
+import urllib.request
 from datetime import timedelta
 from pathlib import Path
 
-from flask import Flask, redirect, render_template_string, request, send_from_directory, session, jsonify
+from flask import (Flask, Response, jsonify, redirect, render_template_string,
+                   request, send_from_directory, session, stream_with_context)
 from telegram_bridge import configure as configure_telegram, state as telegram_state, job_status
+from telegram_bridge import send as telegram_send
 from bybit_client import Client as BybitClient, BybitError
+from iphone_push import load_accounts as load_iphone_accounts, save_accounts as save_iphone_accounts
+from media_telegram import (MAX_TELEGRAM_FILE_BYTES, TelegramUploadError,
+                            safe_filename, send_document as telegram_send_document)
 
 AUTH_FILE = Path('/var/lib/my-agents/auth.json')
 SETTINGS = json.loads(AUTH_FILE.read_text())
 PUBLIC = Path('/var/www/my-agents')
+MEDIA_API = 'http://127.0.0.1:8091'
 app = Flask(__name__)
 app.secret_key = SETTINGS['session_secret']
 app.permanent_session_lifetime = timedelta(days=14)
@@ -23,7 +32,7 @@ app.config.update(SESSION_COOKIE_SECURE=True, SESSION_COOKIE_HTTPONLY=True,
 @app.after_request
 def prevent_setup_cache(response):
     if request.path in {'/telegram', '/telegram/bybit', '/telegram/trader',
-                        '/bybit', '/bybit/trader', '/account'}:
+                        '/bybit', '/bybit/trader', '/account'} or request.path.startswith('/api/media/') or request.path == '/iphone/accounts':
         response.headers['Cache-Control'] = 'no-store'
     return response
 
@@ -38,6 +47,7 @@ BYBIT = '''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name
 BYBIT_TELEGRAM = '''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Telegram для Bybit — Мои агенты</title><link rel="stylesheet" href="/login.css"></head><body><main class="card wide"><a class="brand" href="/"><span class="icon">✳</span>Мои агенты</a><h1>Бот «Аналитик Bybit»</h1><p>Это отдельный чат. Его команды запускают только анализ Bybit.</p>{% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}{% if bot %}<div class="step"><strong>@{{ bot.username }}</strong>{% if bot.paired %}<p>Бот подключён. Команды: <code>/activate</code> — анализ, <code>/status</code> — прогресс, <code>/pause</code> — остановка.</p>{% else %}<p>Откройте его в Telegram и отправьте команду:</p><div class="command">/start {{ bot.code }}</div><a href="https://t.me/{{ bot.username }}?start={{ bot.code }}" target="_blank" rel="noopener noreferrer">Открыть бота в Telegram ↗</a>{% endif %}</div>{% else %}<div class="step"><strong>Создайте отдельного бота</strong><p>Откройте @BotFather, отправьте <code>/newbot</code>. Название: <strong>Аналитик Bybit</strong>. Имя пользователя выберите свободное. Полученный токен вставьте ниже.</p><a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">Открыть BotFather ↗</a></div>{% endif %}<form method="post" action="/telegram/bybit"><input type="hidden" name="csrf" value="{{ csrf }}"><label for="token">Токен нового бота</label><input id="token" type="password" name="token" autocomplete="off" required><button type="submit">Проверить и подключить</button></form><p class="small">Токен вводится только на вашем сайте. Бот Hyperliquid продолжит работать отдельно.</p><div class="foot"><a href="/#agent/bybit">← Вернуться к агенту</a></div></main></body></html>'''
 
 TRADER_KEY_FILE = Path('/var/lib/my-agents/trader-api.json')
+IPHONE_ACCOUNTS = '''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Уведомления iPhone — Мои агенты</title><link rel="stylesheet" href="/login.css"></head><body><main class="card wide"><a class="brand" href="/">Мои агенты</a><h1>Уведомления iPhone</h1><p>Добавьте каждый аккаунт Bybit из приложения. Создайте для него отдельный API-ключ только для чтения, с доступом к позициям и ордерам. Если Bybit запрашивает IP, укажите <code>195.133.15.115</code>. Торговый ключ iPhone сюда не переносится.</p>{% if error %}<div class="error">{{ error }}</div>{% endif %}{% for uid in uids %}<div class="step">UID {{ uid }} <form method="post" action="/iphone/accounts/remove"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="uid" value="{{ uid }}"><button type="submit">Отключить</button></form></div>{% endfor %}<form method="post" action="/iphone/accounts"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Регион аккаунта</label><select name="region"><option value="global">Обычный Bybit</option><option value="testnet">Тестовая сеть Bybit</option><option value="kazakhstan">Казахстан</option><option value="turkey">Турция</option><option value="georgia">Грузия</option><option value="uae">ОАЭ</option><option value="indonesia">Индонезия</option></select><label>API Key только для чтения</label><input name="key" type="password" autocomplete="off" required><label>API Secret</label><input name="secret" type="password" autocomplete="off" required><button type="submit">Проверить и добавить</button></form><p class="small">После добавления аккаунтов уведомления будут приходить через вашего бота торгового агента Bybit. Напоминания об открытых ордерах приходят каждые 3 дня.</p><div class="foot"><a href="/">← Вернуться</a></div></main></body></html>'''
 TRADER = '''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Торговый субаккаунт Bybit — Мои агенты</title><link rel="stylesheet" href="/login.css"></head><body><main class="card wide"><a class="brand" href="/"><span class="icon">✳</span>Мои агенты</a><h1>Торговый субаккаунт Bybit</h1><p>Отдельный доступ для третьего агента. Подключение ключа не размещает ордера. Каждую лимитную заявку агент покажет в Telegram перед отдельным подтверждением.</p>{% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}{% if uid %}<div class="step"><strong>Субаккаунт подключён</strong><p>UID: <code>{{ uid }}</code>. Ключ проверен. Подключение само по себе не отправляет ордера.</p></div>{% else %}<div class="step"><strong>Отдельный ключ субаккаунта</strong><p>Создайте ключ именно торгового субаккаунта Bybit: права ContractTrade → Order, без прав на вывод и переводы. Если Bybit позволяет ограничить IP, укажите адрес сервера <code>195.133.15.115</code>. Ключ аналитика Bybit сюда не подходит.</p></div>{% endif %}<form method="post" action="/bybit/trader"><input type="hidden" name="csrf" value="{{ csrf }}"><label for="region">Регион аккаунта</label><select id="region" name="region"><option value="global">Обычный Bybit</option><option value="kazakhstan">Казахстан</option><option value="turkey">Турция</option><option value="georgia">Грузия</option><option value="uae">ОАЭ</option><option value="indonesia">Индонезия</option></select><label for="key">API Key субаккаунта</label><input id="key" type="password" name="key" autocomplete="off" required><label for="secret">API Secret субаккаунта</label><input id="secret" type="password" name="secret" autocomplete="off" required><button type="submit">Проверить субаккаунт</button></form><p class="small">Введите ключ только здесь, не в чат. После проверки ключ хранится на этом сервере для чтения данных субаккаунта и торговых команд; его можно отключить ниже.</p>{% if uid %}<form method="post" action="/bybit/trader/disconnect"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Отключить торговый ключ</button></form>{% endif %}<div class="foot"><a href="/#agent/bybit-trader">← Вернуться к агенту</a></div></main></body></html>'''
 
 TRADER_TELEGRAM = '''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Telegram торгового агента — Мои агенты</title><link rel="stylesheet" href="/login.css"></head><body><main class="card wide"><a class="brand" href="/"><span class="icon">✳</span>Мои агенты</a><h1>Бот «Торговый агент Bybit»</h1><p>У третьего агента будет отдельный чат Telegram, чтобы его команды не смешивались со сбором данных и анализом.</p>{% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}{% if bot %}<div class="step"><strong>@{{ bot.username }}</strong>{% if bot.paired %}<p>Бот связан с вашим Telegram. <code>/status</code> — состояние, <code>/help</code> — подсказка. Отправка ордера требует отдельного подтверждения в Telegram.</p><a href="https://t.me/{{ bot.username }}" target="_blank" rel="noopener noreferrer">Открыть чат ↗</a>{% else %}<p>Откройте бота и отправьте команду:</p><div class="command">/start {{ bot.code }}</div><a href="https://t.me/{{ bot.username }}?start={{ bot.code }}" target="_blank" rel="noopener noreferrer">Открыть бота ↗</a>{% endif %}</div>{% else %}<div class="step"><strong>Создайте третьего бота</strong><p>В @BotFather отправьте <code>/newbot</code>. Название: <strong>Торговый агент Bybit</strong>. Токен вставьте ниже, не в чат Codex.</p><a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">Открыть BotFather ↗</a></div>{% endif %}<form method="post" action="/telegram/trader"><input type="hidden" name="csrf" value="{{ csrf }}"><label for="token">Токен бота</label><input id="token" type="password" name="token" autocomplete="off" required><button type="submit">Проверить и подключить</button></form><p class="small">Бот готовит лимитное открытие или полное закрытие позиции по текстовой команде. Он отправит её на Bybit только после вашей отдельной команды /confirm с одноразовым кодом; черновик действует 3 минуты.</p><div class="foot"><a href="/#agent/bybit-trader">← Вернуться к агенту</a></div></main></body></html>'''
@@ -64,11 +74,52 @@ def valid_csrf():
     return hmac.compare_digest(request.form.get('csrf', ''), session.get('csrf', '!'))
 
 
+def valid_json_csrf():
+    return hmac.compare_digest(request.headers.get('X-CSRF-Token', ''), session.get('csrf', '!'))
+
+
+def media_headers():
+    api_key = os.environ.get('YTA_API_KEY', '')
+    if len(api_key) < 24:
+        raise RuntimeError('Сервис сохранения видео не настроен')
+    return {'Authorization': f'Bearer {api_key}', 'X-User-ID': settings()['username']}
+
+
+def media_json(path, method='GET', payload=None):
+    body = None if payload is None else json.dumps(payload).encode()
+    headers = media_headers()
+    if body is not None:
+        headers['Content-Type'] = 'application/json'
+    upstream = urllib.request.Request(MEDIA_API + path, data=body, headers=headers, method=method)
+    with urllib.request.urlopen(upstream, timeout=15) as response:
+        return json.loads(response.read())
+
+
+def media_bytes(path, max_bytes):
+    upstream = urllib.request.Request(MEDIA_API + path, headers=media_headers(), method='GET')
+    with urllib.request.urlopen(upstream, timeout=60) as response:
+        length = response.headers.get('Content-Length')
+        if length and int(length) > max_bytes:
+            raise RuntimeError('Файл превышает лимит отправки Telegram')
+        content = response.read(max_bytes + 1)
+        if len(content) > max_bytes:
+            raise RuntimeError('Файл превышает лимит отправки Telegram')
+        return content, response.headers.get_content_type()
+
+
+def media_error(exc):
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            detail = json.loads(exc.read()).get('detail', 'Ошибка обработки')
+        except Exception:
+            detail = 'Ошибка обработки'
+        return jsonify({'detail': detail}), exc.code
+    return jsonify({'detail': str(exc) if isinstance(exc, RuntimeError) else 'Сервис временно недоступен'}), 503
+
+
 def signed_in():
     cfg = settings()
     return session.get('user') == cfg['username'] and session.get('version') == cfg.get('version', 1)
-
-
 
 
 @app.get('/login')
@@ -255,6 +306,45 @@ def trader_page():
     return render_template_string(TRADER, error=None, uid=saved.get('uid'), csrf=csrf_token())
 
 
+@app.get('/iphone/accounts')
+def iphone_accounts_page():
+    if not signed_in(): return redirect('/login')
+    return render_template_string(IPHONE_ACCOUNTS, error=None, uids=sorted(load_iphone_accounts()), csrf=csrf_token())
+
+
+@app.post('/iphone/accounts')
+def iphone_accounts_add():
+    if not signed_in(): return redirect('/login')
+    if not valid_csrf(): return '', 400
+    key = request.form.get('key', '').strip()
+    secret = request.form.get('secret', '').strip()
+    region = request.form.get('region', '')
+    if not key or not secret or len(key) > 256 or len(secret) > 512:
+        error = 'Введите API Key и API Secret.'
+    else:
+        try:
+            identity = BybitClient(key, secret, region).verify_read_only()
+            uid = identity['uid']
+            if not uid.isdecimal(): raise BybitError('Bybit не вернул UID аккаунта.')
+            accounts = load_iphone_accounts()
+            accounts[uid] = {'key': key, 'secret': secret, 'region': region}
+            save_iphone_accounts(accounts)
+            return redirect('/iphone/accounts')
+        except BybitError as exc:
+            error = str(exc)
+    return render_template_string(IPHONE_ACCOUNTS, error=error, uids=sorted(load_iphone_accounts()), csrf=csrf_token())
+
+
+@app.post('/iphone/accounts/remove')
+def iphone_accounts_remove():
+    if not signed_in(): return redirect('/login')
+    if not valid_csrf(): return '', 400
+    accounts = load_iphone_accounts()
+    accounts.pop(request.form.get('uid', ''), None)
+    save_iphone_accounts(accounts)
+    return redirect('/iphone/accounts')
+
+
 @app.post('/bybit/trader')
 def trader_submit():
     if not signed_in(): return redirect('/login')
@@ -318,6 +408,153 @@ def agent_status():
                                    'Открытие лимитной заявки и полное закрытие позиции требуют отдельного подтверждения в Telegram.'})
     agent = 'bybit' if request.args.get('agent') == 'bybit' else 'hyperliquid'
     return jsonify(job_status(agent))
+
+
+@app.get('/api/media/config')
+def media_config():
+    if not signed_in(): return '', 401
+    bot = telegram_state()
+    return jsonify({'csrf': csrf_token(), 'platforms': ['YouTube', 'Instagram'],
+                    'telegram_ready': bool(bot and bot.get('owner_chat_id')),
+                    'telegram_bot': ('@' + bot['bot_username']) if bot and bot.get('owner_chat_id') else None})
+
+
+@app.post('/api/media/jobs')
+def media_create_job():
+    if not signed_in(): return '', 401
+    if not valid_json_csrf(): return jsonify({'detail': 'Обновите страницу и повторите попытку.'}), 400
+    data = request.get_json(silent=True) or {}
+    url = data.get('url', '')
+    if not isinstance(url, str) or len(url) > 2048:
+        return jsonify({'detail': 'Введите корректную ссылку.'}), 400
+    extract_text = data.get('extract_text', False)
+    if not isinstance(extract_text, bool):
+        return jsonify({'detail': 'Неверно указан режим извлечения текста.'}), 400
+    try:
+        return jsonify(media_json('/api/v1/jobs', 'POST', {
+            'url': url, 'extract_text': extract_text})), 202
+    except Exception as exc:
+        return media_error(exc)
+
+
+@app.get('/api/media/jobs/<job_id>')
+def media_job(job_id):
+    if not signed_in(): return '', 401
+    if not re.fullmatch(r'[0-9a-f]{32}', job_id): return '', 404
+    try:
+        return jsonify(media_json(f'/api/v1/jobs/{job_id}'))
+    except Exception as exc:
+        return media_error(exc)
+
+
+@app.get('/api/media/jobs/<job_id>/file')
+def media_file(job_id):
+    if not signed_in(): return redirect('/login')
+    if not re.fullmatch(r'[0-9a-f]{32}', job_id): return '', 404
+    try:
+        upstream_request = urllib.request.Request(
+            MEDIA_API + f'/api/v1/jobs/{job_id}/file', headers=media_headers(), method='GET')
+        upstream = urllib.request.urlopen(upstream_request, timeout=30)
+    except Exception as exc:
+        return media_error(exc)
+
+    def chunks():
+        try:
+            while True:
+                chunk = upstream.read(1024 * 1024)
+                if not chunk: break
+                yield chunk
+        finally:
+            upstream.close()
+
+    headers = {'Content-Disposition': upstream.headers.get('Content-Disposition', 'attachment; filename="video.mp4"')}
+    if upstream.headers.get('Content-Length'):
+        headers['Content-Length'] = upstream.headers['Content-Length']
+    return Response(stream_with_context(chunks()), headers=headers,
+                    content_type=upstream.headers.get_content_type())
+
+
+@app.get('/api/media/jobs/<job_id>/transcript')
+def media_transcript(job_id):
+    if not signed_in(): return redirect('/login')
+    if not re.fullmatch(r'[0-9a-f]{32}', job_id): return '', 404
+    try:
+        upstream_request = urllib.request.Request(
+            MEDIA_API + f'/api/v1/jobs/{job_id}/transcript', headers=media_headers(), method='GET')
+        upstream = urllib.request.urlopen(upstream_request, timeout=30)
+    except Exception as exc:
+        return media_error(exc)
+
+    def chunks():
+        try:
+            while True:
+                chunk = upstream.read(256 * 1024)
+                if not chunk: break
+                yield chunk
+        finally:
+            upstream.close()
+
+    headers = {'Content-Disposition': upstream.headers.get(
+        'Content-Disposition', 'attachment; filename="transcript.txt"')}
+    if upstream.headers.get('Content-Length'):
+        headers['Content-Length'] = upstream.headers['Content-Length']
+    return Response(stream_with_context(chunks()), headers=headers,
+                    content_type='text/plain; charset=utf-8')
+
+
+@app.post('/api/media/jobs/<job_id>/telegram')
+def media_send_telegram(job_id):
+    if not signed_in(): return '', 401
+    if not valid_json_csrf():
+        return jsonify({'detail': 'Обновите страницу и повторите попытку.'}), 400
+    if not re.fullmatch(r'[0-9a-f]{32}', job_id): return '', 404
+    try:
+        job = media_json(f'/api/v1/jobs/{job_id}')
+        if job.get('status') != 'ready':
+            return jsonify({'detail': 'Сначала дождитесь готовности файлов.'}), 409
+        bot = telegram_state()
+        if not bot or not bot.get('owner_chat_id'):
+            return jsonify({'detail': 'Сначала подключите основной Telegram-бот на сайте.'}), 409
+
+        title = str(job.get('title') or 'Видео')[:180]
+        transcript_sent = False
+        video_sent = False
+        if job.get('transcript_url'):
+            transcript, transcript_type = media_bytes(
+                f'/api/v1/jobs/{job_id}/transcript', 2_000_000)
+            telegram_send_document(
+                bot['token'], bot['owner_chat_id'], safe_filename(title + '-text.txt', 'video-text.txt'),
+                transcript, transcript_type or 'text/plain', 'Текст из видео: ' + title)
+            transcript_sent = True
+
+        size = int(job.get('size') or 0)
+        if size and size <= MAX_TELEGRAM_FILE_BYTES:
+            video, video_type = media_bytes(
+                f'/api/v1/jobs/{job_id}/file', MAX_TELEGRAM_FILE_BYTES)
+            telegram_send_document(
+                bot['token'], bot['owner_chat_id'], safe_filename(title + '.mp4', 'video.mp4'),
+                video, video_type or 'video/mp4', 'Видео: ' + title)
+            video_sent = True
+        else:
+            telegram_send(
+                bot['token'], bot['owner_chat_id'],
+                'Видео «' + title + '» не отправлено: размер превышает лимит Telegram 50 МБ. '
+                'Файл остаётся доступен для скачивания на сайте.')
+
+        if video_sent and transcript_sent:
+            message = 'Видео и текст отправлены в Telegram.'
+        elif video_sent:
+            message = 'Видео отправлено в Telegram.'
+        elif transcript_sent:
+            message = 'Текст отправлен в Telegram. Видео больше лимита Telegram 50 МБ.'
+        else:
+            message = 'Видео больше лимита Telegram 50 МБ; уведомление отправлено.'
+        return jsonify({'video_sent': video_sent, 'transcript_sent': transcript_sent,
+                        'message': message})
+    except TelegramUploadError as exc:
+        return jsonify({'detail': str(exc)}), 502
+    except Exception as exc:
+        return media_error(exc)
 
 
 @app.get('/reports/<filename>')

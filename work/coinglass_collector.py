@@ -27,11 +27,21 @@ def collect(output, symbols_limit=None, progress=print, cancelled=lambda:False):
     result={'source':URL,'started_at':datetime.now(timezone.utc).isoformat(),'page_limit':3,'threshold':0.07,'excluded_substring':'XYZ','coins':[]}
     with sync_playwright() as p:
         browser=p.chromium.launch(headless=True)
-        page=browser.new_page()
+        # CoinGlass returns nginx 404 to Playwright's default HeadlessChrome
+        # user agent, although the same page opens with a regular Chrome one.
+        chrome_major=browser.version.split('.',1)[0]
+        context=browser.new_context(
+            user_agent=f'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+                       f'(KHTML, like Gecko) Chrome/{chrome_major}.0.0.0 Safari/537.36',
+            locale='en-US',
+        )
+        page=context.new_page()
         page.set_default_timeout(15000)
         for attempt in range(3):
-            page.goto(URL,wait_until='domcontentloaded',timeout=45000)
+            response=page.goto(URL,wait_until='domcontentloaded',timeout=45000)
             try:
+                if response is None or response.status != 200:
+                    raise RuntimeError(f'CoinGlass вернул HTTP {response.status if response else "без ответа"}')
                 wait_rows(page)
                 break
             except RuntimeError:

@@ -104,19 +104,23 @@ def export(data,path):
     ws.append(['Окончание (UTC)',data.get('finished_at','')])
     ws.append(['Охват','До 3 страниц каждой монеты, позиции по убыванию размера; XYZ исключён'])
     ws.append(['Ограничение','Последовательная выборка публичной таблицы; суммы и цены округлены CoinGlass. Лист «По размеру позиции» содержит все собранные строки, включая уровни дальше 7%.'])
-    ws.append(['Примечание','Объём позиции не равен гарантированному объёму ликвидации. Пустые уровни пропущены на листе «Позиции». На листе «По размеру позиции» месяц во времени входа показан тремя русскими буквами; год и часовой пояс CoinGlass не указывает.'])
+    ws.append(['Примечание','Текущая цена взята из последней собранной строки CoinGlass и актуальна на момент сбора. Объём позиции не равен гарантированному объёму ликвидации. Пустые уровни пропущены на листе «Позиции». На листе «По размеру позиции» месяц во времени входа показан тремя русскими буквами; год и часовой пояс CoinGlass не указывает.'])
     ws.append(['Результат','Неполный сбор' if any(c[4]!='Проверено' for c in coverage) or data.get('cancelled') else 'Все выбранные монеты проверены в пределах 3 страниц'])
     ws.append([])
-    ws.append(['Монета','Лонги, USD','Шорты, USD',
+    ws.append(['Монета','Текущая цена, USD','Лонги, USD','Шорты, USD',
                'Ближайший лонг','Ближайший шорт','Позиций в пределах 7%'])
     groups=defaultdict(list)
     for row in rows: groups[row[0]].append(row)
     for symbol in sorted(groups):
         long=[r for r in groups[symbol] if r[1]=='Лонг']
         short=[r for r in groups[symbol] if r[1]=='Шорт']
+        current_price=next((price for coin in data['coins'] if coin['symbol']==symbol
+                            for page in reversed(coin['pages']) for captured in reversed(page['rows'])
+                            if (price:=number(captured.get('price',''))) is not None and price>0),None)
         nearest_long=min(long,key=lambda r:abs(r[4])) if long else None
         nearest_short=min(short,key=lambda r:abs(r[4])) if short else None
-        ws.append([symbol,sum(r[5] for r in long),sum(r[5] for r in short),
+        ws.append([symbol,float(current_price) if current_price is not None else None,
+                   sum(r[5] for r in long),sum(r[5] for r in short),
                    nearest_long[3] if nearest_long else None,
                    nearest_short[3] if nearest_short else None,
                    len(groups[symbol])])
@@ -154,7 +158,7 @@ def export(data,path):
     ws.column_dimensions['B'].width=34
     ws.row_dimensions[1].height=30
     ws['A1'].font=Font(size=18,bold=True,color='18384A')
-    for n in range(2,9): ws.merge_cells(start_row=n,start_column=2,end_row=n,end_column=6)
+    for n in range(2,9): ws.merge_cells(start_row=n,start_column=2,end_row=n,end_column=7)
     for row in detail.iter_rows(min_row=2):
         for cell in row[2:4]: cell.number_format='#,##0.########'
         row[4].number_format='0.00%;[Red]-0.00%'
@@ -177,7 +181,7 @@ def export(data,path):
             for cell in row:
                 cell.fill = fill
     for row in ws.iter_rows(min_row=11):
-        for cell in row[1:5]: cell.number_format='#,##0.########'
+        for cell in row[1:6]: cell.number_format='#,##0.########'
     for row in ws.iter_rows(min_row=10):
         for cell in row:
             cell.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)

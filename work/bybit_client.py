@@ -9,6 +9,7 @@ import urllib.request
 
 HOSTS = {
     'global': 'https://api.bybit.com',
+    'testnet': 'https://api-testnet.bybit.com',
     'kazakhstan': 'https://api.bybit.kz',
     'turkey': 'https://api.bybit.tr',
     'georgia': 'https://api.bybitgeorgia.ge',

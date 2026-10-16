@@ -47,16 +47,22 @@ def run():
     raw=reports/(stamp+'.json')
     workbook=reports/report_filename(started_at)
     status(state='running',message='Открываю CoinGlass',started_at=stamp)
+    stage='чтение CoinGlass'
     try:
         data=collect(raw,progress=lambda text:status(state='running',message=text,started_at=stamp),cancelled=CANCEL.exists)
+        stage='формирование Excel'
         summary=export(data,workbook)
         caption=('Сбор остановлен. ' if data.get('cancelled') else 'Готово. ')+f"Проверено монет: {summary['checked']}/{summary['total']}. Позиций в пределах 7%: {summary['positions']}. До 3 страниц на монету, размер по убыванию, XYZ исключён."
         if summary['errors']: caption+=' Есть пропуски: смотрите лист «Охват».'
+        stage='отправка Excel в Telegram'
         send_document(token,chat,workbook,caption)
         status(state='cancelled' if data.get('cancelled') else 'completed',message=caption,file=workbook.name,raw_file=raw.name,**summary)
-    except Exception:
-        status(state='failed',message='Сбор или отправка не завершены. Повторите /activate; сохранённые файлы остаются на сервере.')
-        try: send(token,chat,'Не удалось завершить сбор или отправку. CoinGlass мог не загрузить таблицу. Повторите /activate позже. Пустой результат не считается отсутствием ликвидаций.')
+    except Exception as exc:
+        # Exception text from Telegram may contain the bot token in its URL.
+        # Keep only the stage and exception class in the status and message.
+        message=f'Ошибка на этапе: {stage}. Тип: {type(exc).__name__}. Сохранённые файлы остаются на сервере.'
+        status(state='failed',message=message,stage=stage,error_type=type(exc).__name__)
+        try: send(token,chat,message+' Пустой результат не считается отсутствием ликвидаций.')
         except Exception: pass
 
 if __name__=='__main__':
