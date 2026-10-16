@@ -11,7 +11,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from bybit_client import BybitError, BybitUncertainError
-from trader_preview import PreviewError, format_preview, preview_open
+from trader_preview import PreviewError, format_liquidation_price, format_preview, preview_open
 from trader_close import format_close, preview_close
 
 DB_PATH = Path('/var/lib/my-agents/trader-intents.sqlite')
@@ -155,13 +155,13 @@ def create_ladder_draft(owner_id, intent, previews):
     lines.append(f'Всего: ≈ {total} USDT.')
     if previews[0].get('current_liquidation'):
         lines.append('Ликвидация уже открытой позиции: ' +
-                     str(previews[0]['current_liquidation']) +
+                     format_liquidation_price(previews[0]['current_liquidation']) +
                      ' USDT. После исполнения лесенки она изменится.')
     elif previews[0].get('ladder_liquidation') == 'outside_range':
         lines.append('Ликвидация при исполнении всех 4 заявок: вне диапазона цены контракта.')
     elif previews[0].get('ladder_liquidation'):
         lines.append('Ликвидация при исполнении всех 4 заявок: ≈ ' +
-                     str(previews[0]['ladder_liquidation']) + ' USDT.')
+                     format_liquidation_price(previews[0]['ladder_liquidation']) + ' USDT.')
     else:
         lines.append('Ликвидацию после исполнения определит Bybit.')
     if intent.get('control_price') is not None:
@@ -407,7 +407,7 @@ def order_status(owner_id, code, client):
                         and Decimal(str(position.get('size') or '0')) > 0]
             if len(matching) == 1 and matching[0].get('liqPrice'):
                 liquidation_note = (' Цена ликвидации открытой позиции по Bybit: ' +
-                                    str(matching[0]['liqPrice']) + ' USDT.')
+                                    format_liquidation_price(matching[0]['liqPrice']) + ' USDT.')
             else:
                 liquidation_note = ' Bybit пока не показывает цену ликвидации открытой позиции.'
     except (BybitError, ValueError, KeyError, TypeError, ArithmeticError):

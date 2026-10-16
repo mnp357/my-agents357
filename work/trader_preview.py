@@ -108,6 +108,17 @@ def decimal_text(value):
     return format(value, 'f')
 
 
+def format_liquidation_price(value):
+    """Group thousands for display, preserving the source decimal precision."""
+    try:
+        price = Decimal(str(value))
+    except InvalidOperation:
+        return str(value)
+    if not price.is_finite():
+        return str(value)
+    return format(price, ',f').replace(',', ' ')
+
+
 def nonnegative_number(value):
     try:
         result = Decimal(str(value or '0'))
@@ -279,13 +290,13 @@ def format_preview(preview):
                  f'{decimal_text(preview["percent"])}% капитала')
     if preview.get('current_liquidation'):
         liquidation_line = (f'Текущая цена ликвидации уже открытой позиции по Bybit: '
-                            f'{preview["current_liquidation"]} USDT. После исполнения новой заявки она изменится.\n')
+                            f'{format_liquidation_price(preview["current_liquidation"])} USDT. После исполнения новой заявки она изменится.\n')
     elif preview.get('liquidation_estimate') == 'outside_range':
         liquidation_line = ('Оценка цены ликвидации: вне доступного диапазона цены контракта '
                             'при текущем свободном балансе. После исполнения Bybit пересчитает риск.\n')
     elif preview.get('liquidation_estimate'):
         liquidation_line = ('Ликвидация: ≈ ' +
-                            preview['liquidation_estimate'] +
+                            format_liquidation_price(preview['liquidation_estimate']) +
                             ' USDT\n')
     else:
         liquidation_line = 'Цена ликвидации новой позиции: Bybit определит после исполнения заявки.\n'
