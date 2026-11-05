@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 from coinglass_collector import collect
 from hyperliquid_entry import enrich
 from liquidation_report import export
+from wallet_history import load_history,append_history,save_history
+from wallet_activity import connect as activity_connect,collect_activity,report_rows
 
 ROOT=Path('/var/lib/my-agents')
 STATUS=ROOT/'job-status.json'
@@ -54,10 +56,28 @@ def run():
         stage='проверка цен входа Hyperliquid'
         entry_coverage=enrich(data,progress=lambda text:status(state='running',message=text,started_at=stamp),cancelled=CANCEL.exists)
         raw.write_text(json.dumps(data,ensure_ascii=False,indent=2))
+        stage='обновление истории кошельков'
+        history_path=ROOT/'wallet-history.json'
+        history=append_history(load_history(history_path),data)
+        stage='проверка действий крупных кошельков'
+        activity_db=activity_connect(ROOT/'wallet-activity.sqlite3')
+        try:
+            activity_summary=collect_activity(
+                activity_db,history,data['started_at'],
+                progress=lambda text:status(state='running',message=text,started_at=stamp),
+                cancelled=CANCEL.exists)
+            activity_events,activity_checks,activity_positions=report_rows(activity_db)
+        finally:
+            activity_db.close()
+        if CANCEL.exists(): data['cancelled']=True
         stage='формирование Excel'
-        summary=export(data,workbook)
+        summary=export(data,workbook,history_runs=history['runs'],
+                       activity_events=activity_events,activity_checks=activity_checks,
+                       activity_positions=activity_positions)
+        save_history(history_path,history)
         caption=('Сбор остановлен. ' if data.get('cancelled') else 'Готово. ')+f"Проверено монет: {summary['checked']}/{summary['total']}. Позиций в пределах 7%: {summary['positions']}. До 3 страниц на монету, размер по убыванию, XYZ исключён."
         caption+=f" Цена входа Hyperliquid: {entry_coverage['matched']}/{entry_coverage['rows']} строк."
+        caption+=f" Кошельков под наблюдением: {activity_summary['wallets']}; пробелов проверки: {activity_summary['gaps']}."
         if summary['errors']: caption+=' Есть пропуски: смотрите лист «Охват».'
         stage='отправка Excel в Telegram'
         send_document(token,chat,workbook,caption)

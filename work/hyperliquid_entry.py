@@ -38,7 +38,7 @@ def read_account(wallet, dex, opener=urlopen):
         time.sleep(2 ** attempt)
 
 
-def matching_entry(positions, symbol, side):
+def matching_position(positions, symbol, side):
     for item in positions:
         position = item.get('position') or {}
         if position.get('coin') != symbol:
@@ -51,8 +51,13 @@ def matching_entry(positions, symbol, side):
         if not price.is_finite() or price <= 0:
             continue
         if (side == 'Long' and size > 0) or (side == 'Short' and size < 0):
-            return str(price)
+            return {'entry_price': str(price), 'size_coins': str(abs(size))}
     return None
+
+
+def matching_entry(positions, symbol, side):
+    matched = matching_position(positions, symbol, side)
+    return matched['entry_price'] if matched else None
 
 
 def enrich(data, progress=lambda message: None, cancelled=lambda: False,
@@ -63,6 +68,7 @@ def enrich(data, progress=lambda message: None, cancelled=lambda: False,
         for page in coin['pages']:
             for row in page['rows']:
                 row['hyperliquid_entry_price'] = None
+                row['hyperliquid_position_size'] = None
                 row['hyperliquid_entry_checked_at'] = None
                 row['hyperliquid_entry_status'] = 'Нет адреса'
                 wallet = str(row.get('wallet') or '')
@@ -80,10 +86,11 @@ def enrich(data, progress=lambda message: None, cancelled=lambda: False,
             positions = reader(wallet, dex)
             checked_at = datetime.now(timezone.utc).isoformat()
             for row in rows:
-                entry = matching_entry(positions, row.get('symbol'), row.get('side'))
-                row['hyperliquid_entry_price'] = entry
+                matched = matching_position(positions, row.get('symbol'), row.get('side'))
+                row['hyperliquid_entry_price'] = matched['entry_price'] if matched else None
+                row['hyperliquid_position_size'] = matched['size_coins'] if matched else None
                 row['hyperliquid_entry_checked_at'] = checked_at
-                row['hyperliquid_entry_status'] = 'Проверено' if entry else 'Позиция не совпала'
+                row['hyperliquid_entry_status'] = 'Проверено' if matched else 'Позиция не совпала'
         except Exception:
             for row in rows:
                 row['hyperliquid_entry_status'] = 'Ошибка запроса'

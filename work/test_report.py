@@ -42,11 +42,32 @@ with TemporaryDirectory() as directory:
     assert all(sheet.cell(row,col).alignment.horizontal == 'center'
                for row in (10,11) for col in range(1,7))
     positions=load_workbook(file,read_only=True,data_only=True)['Позиции']
+    layout=load_workbook(file)['Позиции']
+    assert all(layout.column_dimensions[column].width == 10
+               for column in 'ABCDEF')
+    assert layout.column_dimensions['H'].width == 35.7
+    assert layout.column_dimensions['I'].width == 50
+    assert layout.row_dimensions[1].height == 76
     assert positions.cell(1,4).value == 'Цена входа Hyperliquid, USD'
+    assert positions.cell(1,9).value == 'Кошелёк Hyperliquid'
     assert next(positions.cell(r,4).value for r in range(2,6)
                 if positions.cell(r,5).value == 94) == 95.25
+    assert next(positions.cell(r,9).value for r in range(2,6)
+                if positions.cell(r,5).value == 94) == '0x'+'a'*40
     assert next(positions.cell(r,4).value for r in range(2,6)
                 if positions.cell(r,5).value == 99) is None
     all_positions=load_workbook(file,read_only=True,data_only=True)['По размеру позиции']
     assert all_positions.cell(2,4).value == 95.25
+    ranked={'source':'CoinGlass','started_at':'2026-10-08T00:00:00Z',
+            'eligible_symbols':['BTC'],'coins':[{'symbol':'BTC','error':None,
+            'pages':[{'captured_at':'2026-10-08T00:00:30Z','rows':[
+                row('BTC','Long','94') | {'volume':f'${n}M','wallet':f'0x{n:040x}'}
+                for n in range(1,9)]}]}]}
+    ranked_file=Path(directory)/'ranked.xlsx'
+    export(ranked,ranked_file)
+    ranked_sheet=load_workbook(ranked_file)['Позиции']
+    highlighted=[ranked_sheet.cell(r,7).value for r in range(2,10)
+                 if ranked_sheet.cell(r,1).fill.fgColor.rgb == '00FFF2CC']
+    assert sorted(highlighted)==[n*1000000 for n in range(2,9)]
+    assert ranked_sheet.cell(2,9).value == '0x'+f'{1:040x}'
 print('Summary nearest levels and centered alignment: passed')
