@@ -24,6 +24,8 @@ class MediaInfo:
     title: str
     duration: int | None
     estimated_bytes: int | None
+    channel: str | None = None
+    thumbnail_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -176,7 +178,17 @@ class Downloader:
         size = _estimated_size(info)
         if size and size > self.settings.max_file_bytes:
             raise DownloadRejected("Ролик превышает допустимый размер")
-        return MediaInfo(str(info.get("title") or "video")[:200], duration, size)
+        channel = info.get("channel") or info.get("uploader") or info.get("creator")
+        channel = str(channel)[:200] if channel else None
+        thumbnail_url = None
+        if self._is_youtube(url):
+            candidate = info.get("thumbnail")
+            if isinstance(candidate, str) and len(candidate) <= 2048:
+                parsed = urlsplit(candidate)
+                if parsed.scheme == "https" and parsed.hostname in {"i.ytimg.com", "img.youtube.com"}:
+                    thumbnail_url = candidate
+        return MediaInfo(str(info.get("title") or "video")[:200], duration, size,
+                         channel, thumbnail_url)
 
     async def _verify_final_duration(self, path: Path) -> int:
         ffprobe = shutil.which("ffprobe")
@@ -285,6 +297,7 @@ class Downloader:
         self.settings.model_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         output = target_dir / f"{stem}-transcript.txt"
         metadata = target_dir / f"{stem}-transcript.json"
+        progress = target_dir / f"{stem}-transcript.progress.json"
         command = [
             sys.executable,
             "-m",
@@ -295,6 +308,7 @@ class Downloader:
             self.settings.transcript_model,
             str(self.settings.model_dir),
             str(self.settings.transcript_cpu_threads),
+            str(progress),
         ]
         await self._run(command, self.settings.transcript_timeout_seconds, target_dir)
         if not output.is_file() or output.parent != target_dir or not metadata.is_file():

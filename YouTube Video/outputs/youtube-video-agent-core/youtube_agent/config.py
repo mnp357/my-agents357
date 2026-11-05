@@ -25,6 +25,7 @@ class Settings:
     max_jobs_per_hour: int
     max_bytes_per_day: int
     max_global_jobs: int
+    max_active_jobs_per_user: int = 10
     max_transcript_seconds: int = 7_200
     transcript_timeout_seconds: int = 3_600
     transcript_model: str = "small"
@@ -49,6 +50,7 @@ class Settings:
             max_jobs_per_hour=_integer("YTA_MAX_JOBS_PER_HOUR", 20),
             max_bytes_per_day=_integer("YTA_MAX_BYTES_PER_DAY", 4 * 1024**3),
             max_global_jobs=_integer("YTA_MAX_GLOBAL_JOBS", 2),
+            max_active_jobs_per_user=_integer("YTA_MAX_ACTIVE_JOBS_PER_USER", 10),
             max_transcript_seconds=_integer("YTA_MAX_TRANSCRIPT_SECONDS", 7_200),
             transcript_timeout_seconds=_integer("YTA_TRANSCRIPT_TIMEOUT_SECONDS", 3_600),
             transcript_model=os.getenv("YTA_TRANSCRIPT_MODEL", "small"),

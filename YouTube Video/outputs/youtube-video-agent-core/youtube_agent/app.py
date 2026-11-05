@@ -32,7 +32,13 @@ class Job:
     owner: str
     status: str
     created_at: float
+    url: str | None = None
+    started_at: float | None = None
+    transcription_started_at: float | None = None
+    transcript_progress: float | None = None
     title: str | None = None
+    channel: str | None = None
+    thumbnail_url: str | None = None
     duration: int | None = None
     size: int | None = None
     error: str | None = None
@@ -61,7 +67,8 @@ def create_app(settings: Settings | None = None, downloader: Downloader | None =
     quota = QuotaStore(root / "quota.sqlite3", settings.max_jobs_per_hour, settings.max_bytes_per_day)
     worker = downloader or Downloader(settings)
     jobs: dict[str, Job] = {}
-    active_users: set[str] = set()
+    active_jobs_by_user: dict[str, int] = {}
+    user_slots: dict[str, asyncio.Lock] = {}
     lock = asyncio.Lock()
     global_slots = asyncio.Semaphore(settings.max_global_jobs)
     app = FastAPI(title="Сохранение видео YouTube и Instagram", version="1.2")
@@ -107,7 +114,10 @@ def create_app(settings: Settings | None = None, downloader: Downloader | None =
                     owner=str(data["owner"]),
                     status="ready",
                     created_at=float(data["created_at"]),
+                    url=data.get("url"),
                     title=data.get("title"),
+                    channel=data.get("channel"),
+                    thumbnail_url=data.get("thumbnail_url"),
                     duration=data.get("duration"),
                     size=file_path.stat().st_size,
                     error=data.get("error"),
@@ -142,33 +152,75 @@ def create_app(settings: Settings | None = None, downloader: Downloader | None =
             if job.created_at < cutoff and job.status != "running":
                 jobs.pop(job_id, None)
 
-    async def perform(job: Job, url: str, reservation: int, extract_text: bool) -> None:
+    def sync_transcription_progress(job: Job) -> None:
+        if job.status != "transcribing" or not job.file:
+            return
+        progress_path = job.file.with_name(job.file.stem + "-transcript.progress.json")
+        try:
+            progress = float(json.loads(progress_path.read_text(encoding="utf-8"))["progress"])
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            return
+        job.transcript_progress = min(1.0, max(0.0, progress))
+
+    def job_status(job: Job) -> dict:
+        sync_transcription_progress(job)
+        data = job.public()
+        now = time.time()
+        data["elapsed_seconds"] = max(0, int(now - job.created_at))
+        data["processing_seconds"] = (
+            max(0, int(now - job.started_at)) if job.started_at is not None else None
+        )
+        data["estimated_remaining_seconds"] = None
+        if (
+            job.status == "transcribing"
+            and job.transcript_progress is not None
+            and job.transcript_progress >= 0.15
+            and job.transcription_started_at is not None
+        ):
+            elapsed = max(1.0, now - job.transcription_started_at)
+            data["estimated_remaining_seconds"] = int(
+                elapsed * (1.0 - job.transcript_progress) / job.transcript_progress
+            )
+        return data
+
+    async def perform(
+        job: Job,
+        url: str,
+        reservation: int,
+        extract_text: bool,
+        user_slot: asyncio.Lock,
+    ) -> None:
         job_dir = jobs_dir / job.id
         try:
-            async with global_slots:
-                job.status = "running"
-                save_job(job)
-                info = await worker.inspect(url)
-                job.title, job.duration = info.title, info.duration
-                if info.estimated_bytes:
-                    quota.ensure_capacity(reservation, info.estimated_bytes)
-                result = await worker.download(url, job_dir, uuid.uuid4().hex)
-                job.file = result
-                job.size = result.stat().st_size
-                quota.complete(reservation, job.size)
-                if extract_text:
-                    job.status = "transcribing"
+            async with user_slot:
+                async with global_slots:
+                    job.status = "running"
+                    job.started_at = time.time()
                     save_job(job)
-                    try:
-                        transcript = await worker.transcribe(result, job_dir, result.stem)
-                        job.transcript = transcript.path
-                        job.transcript_language = transcript.language
-                    except DownloadRejected as exc:
-                        job.transcript_error = str(exc)
-                    except Exception:
-                        job.transcript_error = "Не удалось извлечь текст из речи"
-                job.status = "ready"
-                save_job(job)
+                    info = await worker.inspect(url)
+                    job.title, job.duration = info.title, info.duration
+                    job.channel, job.thumbnail_url = info.channel, info.thumbnail_url
+                    save_job(job)
+                    if info.estimated_bytes:
+                        quota.ensure_capacity(reservation, info.estimated_bytes)
+                    result = await worker.download(url, job_dir, uuid.uuid4().hex)
+                    job.file = result
+                    job.size = result.stat().st_size
+                    quota.complete(reservation, job.size)
+                    if extract_text:
+                        job.status = "transcribing"
+                        job.transcription_started_at = time.time()
+                        save_job(job)
+                        try:
+                            transcript = await worker.transcribe(result, job_dir, result.stem)
+                            job.transcript = transcript.path
+                            job.transcript_language = transcript.language
+                        except DownloadRejected as exc:
+                            job.transcript_error = str(exc)
+                        except Exception:
+                            job.transcript_error = "Не удалось извлечь текст из речи"
+                    job.status = "ready"
+                    save_job(job)
         except (DownloadRejected, QuotaExceeded) as exc:
             job.status = "failed"
             job.error = str(exc)
@@ -179,7 +231,11 @@ def create_app(settings: Settings | None = None, downloader: Downloader | None =
             shutil.rmtree(job_dir, ignore_errors=True)
         finally:
             async with lock:
-                active_users.discard(job.owner)
+                remaining = active_jobs_by_user.get(job.owner, 0) - 1
+                if remaining > 0:
+                    active_jobs_by_user[job.owner] = remaining
+                else:
+                    active_jobs_by_user.pop(job.owner, None)
 
     @app.get("/healthz")
     async def healthz() -> dict:
@@ -193,21 +249,31 @@ def create_app(settings: Settings | None = None, downloader: Downloader | None =
         except UnsafeUrl as exc:
             raise HTTPException(400, str(exc)) from exc
         async with lock:
-            if owner in active_users:
-                raise HTTPException(429, "У пользователя уже есть активное задание")
+            active_count = active_jobs_by_user.get(owner, 0)
+            if active_count >= settings.max_active_jobs_per_user:
+                raise HTTPException(
+                    429,
+                    f"Достигнут лимит активных заданий ({settings.max_active_jobs_per_user}) на пользователя",
+                )
             try:
                 reservation = quota.reserve(owner)
             except QuotaExceeded as exc:
                 raise HTTPException(429, str(exc)) from exc
-            active_users.add(owner)
+            active_jobs_by_user[owner] = active_count + 1
+            user_slot = user_slots.setdefault(owner, asyncio.Lock())
         job_id = uuid.uuid4().hex
         job_dir = jobs_dir / job_id
         job_dir.mkdir(mode=0o700)
-        job = Job(job_id, owner, "queued", time.time())
+        job = Job(job_id, owner, "queued", time.time(), url=url)
         jobs[job_id] = job
         save_job(job)
-        background.add_task(perform, job, url, reservation, payload.extract_text)
-        return job.public()
+        background.add_task(perform, job, url, reservation, payload.extract_text, user_slot)
+        response = job.public()
+        response["elapsed_seconds"] = 0
+        response["processing_seconds"] = None
+        response["queue_position"] = active_count + 1
+        response["queued_behind_existing_job"] = active_count > 0
+        return response
 
     def owned_job(job_id: str, owner: str) -> Job:
         if not re.fullmatch(r"[0-9a-f]{32}", job_id):
@@ -217,10 +283,24 @@ def create_app(settings: Settings | None = None, downloader: Downloader | None =
             raise HTTPException(404, "Задание не найдено")
         return job
 
+    @app.get("/api/v1/jobs/active")
+    async def get_active_jobs(owner: str = Depends(authenticate)) -> list[dict]:
+        cleanup_expired()
+        active = sorted(
+            (job for job in jobs.values() if job.owner == owner and job.status not in {"ready", "failed"}),
+            key=lambda job: job.created_at,
+        )
+        results = []
+        for position, job in enumerate(active, start=1):
+            data = job_status(job)
+            data["queue_position"] = position if job.status == "queued" else None
+            results.append(data)
+        return results
+
     @app.get("/api/v1/jobs/{job_id}")
     async def get_job(job_id: str, owner: str = Depends(authenticate)) -> dict:
         cleanup_expired()
-        return owned_job(job_id, owner).public()
+        return job_status(owned_job(job_id, owner))
 
     @app.get("/api/v1/jobs/{job_id}/file")
     async def get_file(job_id: str, request: Request, owner: str = Depends(authenticate)) -> FileResponse:
