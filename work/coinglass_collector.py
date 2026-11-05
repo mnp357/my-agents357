@@ -10,7 +10,9 @@ URL = 'https://www.coinglass.com/hyperliquid'
 def extract(page):
     return page.locator('table').last.locator('tbody tr.ant-table-row').evaluate_all('''rows => rows.map(r => {
       const c=Array.from(r.querySelectorAll('td')).map(c=>c.innerText.trim());
-      return {rank:c[1],symbol:c[3],side:c[4],volume:c[5]?.split('\\n')[0],entry_price:c[7]?.split('\\n')[0],liquidation:c[8],price:c[11],entry_time:c[12]?.replace(/\\s+/g,' ')};
+      const href=r.querySelector('a[href^="/hyperliquid/"]')?.getAttribute('href') || '';
+      const wallet=href.split('/')[2] || '';
+      return {rank:c[1],wallet,symbol:c[3],side:c[4],volume:c[5]?.split('\\n')[0],entry_price:c[7]?.split('\\n')[0],liquidation:c[8],price:c[11],entry_time:c[12]?.replace(/\\s+/g,' ')};
     })''')
 
 def wait_rows(page, symbol=None, first_rank=None):
