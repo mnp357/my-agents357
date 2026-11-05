@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from coinglass_collector import collect
+from hyperliquid_entry import enrich
 from liquidation_report import export
 
 ROOT=Path('/var/lib/my-agents')
@@ -50,9 +51,13 @@ def run():
     stage='чтение CoinGlass'
     try:
         data=collect(raw,progress=lambda text:status(state='running',message=text,started_at=stamp),cancelled=CANCEL.exists)
+        stage='проверка цен входа Hyperliquid'
+        entry_coverage=enrich(data,progress=lambda text:status(state='running',message=text,started_at=stamp),cancelled=CANCEL.exists)
+        raw.write_text(json.dumps(data,ensure_ascii=False,indent=2))
         stage='формирование Excel'
         summary=export(data,workbook)
         caption=('Сбор остановлен. ' if data.get('cancelled') else 'Готово. ')+f"Проверено монет: {summary['checked']}/{summary['total']}. Позиций в пределах 7%: {summary['positions']}. До 3 страниц на монету, размер по убыванию, XYZ исключён."
+        caption+=f" Цена входа Hyperliquid: {entry_coverage['matched']}/{entry_coverage['rows']} строк."
         if summary['errors']: caption+=' Есть пропуски: смотрите лист «Охват».'
         stage='отправка Excel в Telegram'
         send_document(token,chat,workbook,caption)

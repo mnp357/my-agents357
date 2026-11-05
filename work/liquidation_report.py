@@ -53,18 +53,20 @@ def analyse(data):
         for page in coin['pages']:
             for row in page['rows']:
                 if 'XYZ' in row['symbol'].upper(): continue
-                price,liq,volume=(number(row.get(k,'')) for k in ('price','liquidation','volume'))
+                price,entry,liq,volume=(number(row.get(k,'')) for k in ('price','hyperliquid_entry_price','liquidation','volume'))
                 if price is None or price<=0 or liq is None or liq<=0 or volume is None or volume<0:
                     missing+=1
                     continue
                 distance=(liq-price)/price
                 eligible=(row['side']=='Long' and -Decimal('.07')<=distance<=0) or (row['side']=='Short' and 0<=distance<=Decimal('.07'))
                 if eligible:
-                    selected.append([row['symbol'],'Лонг' if row['side']=='Long' else 'Шорт',float(price),float(liq),float(distance),float(volume),page['captured_at']])
+                    selected.append([row['symbol'],'Лонг' if row['side']=='Long' else 'Шорт',
+                                     float(price),float(entry) if entry is not None else None,
+                                     float(liq),float(distance),float(volume),page['captured_at']])
         coverage.append([coin['symbol'],len(coin['pages']),sum(len(p['rows']) for p in coin['pages']),missing,'Ошибка' if coin['error'] else 'Проверено',coin['error'] or ''])
     done={c['symbol'] for c in data['coins']}
     coverage.extend([[s,0,0,0,'Не проверено',''] for s in data['eligible_symbols'] if s not in done])
-    selected.sort(key=lambda r:(r[0],r[1],abs(r[4])))
+    selected.sort(key=lambda r:(r[0],r[1],abs(r[5])))
     return selected,coverage
 
 def position_rows(data):
@@ -76,7 +78,7 @@ def position_rows(data):
                 if 'XYZ' in row.get('symbol','').upper():
                     continue
                 volume=number(row.get('volume',''))
-                entry=number(row.get('entry_price',''))
+                entry=number(row.get('hyperliquid_entry_price',''))
                 liquidation=number(row.get('liquidation',''))
                 price=number(row.get('price',''))
                 distance=(liquidation-price)/price if price and price>0 and liquidation and liquidation>0 else None
@@ -104,39 +106,38 @@ def export(data,path):
     ws.append(['Окончание (UTC)',data.get('finished_at','')])
     ws.append(['Охват','До 3 страниц каждой монеты, позиции по убыванию размера; XYZ исключён'])
     ws.append(['Ограничение','Последовательная выборка публичной таблицы; суммы и цены округлены CoinGlass. Лист «По размеру позиции» содержит все собранные строки, включая уровни дальше 7%.'])
-    ws.append(['Примечание','Текущая цена взята из последней собранной строки CoinGlass и актуальна на момент сбора. Объём позиции не равен гарантированному объёму ликвидации. Пустые уровни пропущены на листе «Позиции». На листе «По размеру позиции» месяц во времени входа показан тремя русскими буквами; год и часовой пояс CoinGlass не указывает.'])
+    ws.append(['Примечание','Цена входа взята из открытой позиции Hyperliquid по адресу, активу и направлению на момент отдельного запроса; если позиция уже закрыта, изменила направление или ответ недоступен, ячейка пуста. Объём позиции не равен гарантированному объёму ликвидации. Пустые уровни пропущены на листе «Позиции». На листе «По размеру позиции» месяц во времени входа показан тремя русскими буквами; год и часовой пояс CoinGlass не указывает.'])
     ws.append(['Результат','Неполный сбор' if any(c[4]!='Проверено' for c in coverage) or data.get('cancelled') else 'Все выбранные монеты проверены в пределах 3 страниц'])
-    ws.append([])
-    ws.append(['Монета','Текущая цена, USD','Лонги, USD','Шорты, USD',
+    entry_coverage=data.get('hyperliquid_entry_coverage') or {}
+    ws.append(['Цена входа (Hyperliquid)',
+               f"Подтверждено: {entry_coverage.get('matched', 0)}/{entry_coverage.get('rows', 0)} строк; без адреса: {entry_coverage.get('missing_wallet', 0)}, несовпадение позиции: {entry_coverage.get('unmatched', 0)}, ошибка запроса: {entry_coverage.get('request_errors', 0)}, не проверено: {entry_coverage.get('not_checked', 0)}"])
+    ws.append(['Монета','Лонги, USD','Шорты, USD',
                'Ближайший лонг','Ближайший шорт','Позиций в пределах 7%'])
     groups=defaultdict(list)
     for row in rows: groups[row[0]].append(row)
     for symbol in sorted(groups):
         long=[r for r in groups[symbol] if r[1]=='Лонг']
         short=[r for r in groups[symbol] if r[1]=='Шорт']
-        current_price=next((price for coin in data['coins'] if coin['symbol']==symbol
-                            for page in reversed(coin['pages']) for captured in reversed(page['rows'])
-                            if (price:=number(captured.get('price',''))) is not None and price>0),None)
-        nearest_long=min(long,key=lambda r:abs(r[4])) if long else None
-        nearest_short=min(short,key=lambda r:abs(r[4])) if short else None
-        ws.append([symbol,float(current_price) if current_price is not None else None,
-                   sum(r[5] for r in long),sum(r[5] for r in short),
-                   nearest_long[3] if nearest_long else None,
-                   nearest_short[3] if nearest_short else None,
+        nearest_long=min(long,key=lambda r:abs(r[5])) if long else None
+        nearest_short=min(short,key=lambda r:abs(r[5])) if short else None
+        ws.append([symbol,sum(r[6] for r in long),sum(r[6] for r in short),
+                   nearest_long[4] if nearest_long else None,
+                   nearest_short[4] if nearest_short else None,
                    len(groups[symbol])])
     detail=wb.create_sheet('Позиции')
-    detail.append(['Монета','Сторона','Текущая цена, USD','Ликвидация, USD','Расстояние, %','Размер позиции, USD','Сбор (UTC)'])
+    detail.append(['Монета','Сторона','Текущая цена, USD','Цена входа Hyperliquid, USD',
+                   'Ликвидация, USD','Расстояние, %','Размер позиции, USD','Сбор (UTC)'])
     previous_symbol=None
     for row in rows:
         if previous_symbol is not None and row[0]!=previous_symbol:
-            detail.append([None]*7)
+            detail.append([None]*8)
         detail.append(row)
         previous_symbol=row[0]
     cov=wb.create_sheet('Охват')
     cov.append(['Монета','Страниц','Строк','Нет корректного уровня/числа','Статус','Ошибка'])
     for row in coverage: cov.append(row)
     size_sheet=wb.create_sheet('По размеру позиции')
-    size_sheet.append(['Актив','Сторона','Позиция, USD','Цена входа, USD',
+    size_sheet.append(['Актив','Сторона','Позиция, USD','Цена входа Hyperliquid, USD',
                        'Цена ликвидации, USD','Время входа','Расстояние до ликвидации, %'])
     previous_symbol=None
     for row in position_rows(data):
@@ -158,16 +159,18 @@ def export(data,path):
     ws.column_dimensions['B'].width=34
     ws.row_dimensions[1].height=30
     ws['A1'].font=Font(size=18,bold=True,color='18384A')
-    for n in range(2,9): ws.merge_cells(start_row=n,start_column=2,end_row=n,end_column=7)
+    for n in range(2,10): ws.merge_cells(start_row=n,start_column=2,end_row=n,end_column=6)
     for row in detail.iter_rows(min_row=2):
-        for cell in row[2:4]: cell.number_format='#,##0.########'
-        row[4].number_format='0.00%;[Red]-0.00%'
-        row[5].number_format='#,##0.00'
-    detail.column_dimensions['G'].width=35
+        for cell in row[2:5]: cell.number_format='#,##0.########'
+        row[5].number_format='0.00%;[Red]-0.00%'
+        row[6].number_format='#,##0.00'
+    detail.column_dimensions['D'].width=28
+    detail.column_dimensions['H'].width=35
     cov.column_dimensions['D'].width=30
     cov.column_dimensions['F'].width=65
     size_sheet.column_dimensions['F'].width=28
     size_sheet.column_dimensions['G'].width=31
+    size_sheet.column_dimensions['D'].width=28
     for row in size_sheet.iter_rows(min_row=2):
         for cell in row[2:5]: cell.number_format='#,##0.########'
         row[6].number_format='0.00%;[Red]-0.00%'
@@ -181,7 +184,7 @@ def export(data,path):
             for cell in row:
                 cell.fill = fill
     for row in ws.iter_rows(min_row=11):
-        for cell in row[1:6]: cell.number_format='#,##0.########'
+        for cell in row[1:5]: cell.number_format='#,##0.########'
     for row in ws.iter_rows(min_row=10):
         for cell in row:
             cell.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)
